@@ -11,6 +11,7 @@ CLAUDE.md
 # Private keys
 *.key
 *_key.txt
+key.txt
 
 # Runtime data
 dns_cache.json
