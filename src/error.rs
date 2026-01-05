@@ -26,6 +26,12 @@ pub enum Error {
     /// Eth subprotocol errors (Status exchange).
     Eth(String),
 
+    /// Discovery protocol errors (discv4).
+    Discovery(String),
+
+    /// DNS discovery errors (EIP-1459).
+    Dns(String),
+
     /// Network I/O errors.
     Io(String),
 
@@ -49,6 +55,8 @@ impl fmt::Display for Error {
             Error::Session(msg) => write!(f, "session error: {}", msg),
             Error::Protocol(msg) => write!(f, "protocol error: {}", msg),
             Error::Eth(msg) => write!(f, "eth error: {}", msg),
+            Error::Discovery(msg) => write!(f, "discovery error: {}", msg),
+            Error::Dns(msg) => write!(f, "DNS error: {}", msg),
             Error::Io(msg) => write!(f, "I/O error: {}", msg),
             Error::ConnectionClosed => write!(f, "connection closed"),
             Error::Disconnected(reason) => write!(f, "disconnected: {}", reason),

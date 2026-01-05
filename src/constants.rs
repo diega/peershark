@@ -67,3 +67,13 @@ pub const SIGNATURE_SIZE: usize = 65;
 
 /// ECIES encryption overhead: ephemeral pubkey (65) + IV (16) + MAC (32).
 pub const ECIES_OVERHEAD: usize = 65 + 16 + 32;
+
+// ---- Peer Scoring Constants ----
+
+/// Score threshold below which a peer is considered temporarily banned.
+/// A peer at or below this score will not be selected for new connections.
+pub const PEER_SCORE_THRESHOLD: i32 = -10;
+
+/// Time in seconds to recover 1 point of score.
+/// After 5 minutes of not being penalized, a peer recovers 1 point.
+pub const PEER_SCORE_RECOVERY_SECS: u64 = 300;

@@ -3,6 +3,17 @@
 //! These functions use minimal encoding (no leading zeros), which is required
 //! for RLP-compatible integer representation.
 
+/// Encode a u16 as big-endian bytes with minimal encoding (no leading zeros).
+pub fn encode_u16(value: u16) -> Vec<u8> {
+    if value == 0 {
+        vec![]
+    } else if value < 256 {
+        vec![value as u8]
+    } else {
+        value.to_be_bytes().to_vec()
+    }
+}
+
 /// Decode big-endian bytes to u16 (handles 0-2 bytes).
 pub fn decode_u16(bytes: &[u8]) -> u16 {
     match bytes.len() {
