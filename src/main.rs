@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod api;
 mod bytes;
 mod connection;
@@ -29,7 +27,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::{Arg, ArgGroup, Command};
+use clap::{Arg, ArgMatches, Command};
 use k256::ecdsa::SigningKey;
 use time::UtcOffset;
 use tokio::net::UdpSocket;
@@ -76,11 +74,11 @@ fn main() -> ExitCode {
     let matches = Command::new("peershark")
         .version("0.1.0")
         .about("P2P traffic analyzer for Ethereum devp2p protocol")
+        .subcommand_required(false)
         .arg(
             Arg::new("private-key")
                 .short('k')
                 .long("private-key")
-                .required(true)
                 .help("Path to private key file (master key for discovery peer)"),
         )
         .arg(
@@ -102,11 +100,6 @@ fn main() -> ExitCode {
                 .default_value("dns_cache.json")
                 .help("Path to DNS discovery cache file"),
         )
-        .group(
-            ArgGroup::new("node-source")
-                .args(["bootnodes", "enrtree"])
-                .required(true),
-        )
         .arg(
             Arg::new("client-id")
                 .short('c')
@@ -118,7 +111,6 @@ fn main() -> ExitCode {
             Arg::new("listen")
                 .short('l')
                 .long("listen")
-                .required(true)
                 .help("Port for discovery peer (UDP only)"),
         )
         .arg(
@@ -154,14 +146,52 @@ fn main() -> ExitCode {
                 .action(clap::ArgAction::SetTrue)
                 .help("Disable API authentication (for development only)"),
         )
+        .subcommand(
+            Command::new("generate-token")
+                .about("Generate a JWT token for API authentication")
+                .arg(
+                    Arg::new("jwt-secret-file")
+                        .long("jwt-secret-file")
+                        .required(true)
+                        .help("Path to JWT secret file (32 bytes hex)"),
+                )
+                .arg(
+                    Arg::new("expires-in")
+                        .long("expires-in")
+                        .default_value("24h")
+                        .help("Token expiration (e.g., 1h, 24h, 7d)"),
+                ),
+        )
         .get_matches();
 
-    let key_path: &String = matches.get_one("private-key").expect("required arg");
+    // Handle generate-token subcommand
+    if let Some(sub_matches) = matches.subcommand_matches("generate-token") {
+        return generate_token_command(sub_matches);
+    }
+
+    // Validate required args for proxy mode
+    let key_path: &String = match matches.get_one("private-key") {
+        Some(path) => path,
+        None => {
+            error!("--private-key is required");
+            return ExitCode::from(1);
+        }
+    };
     let bootnodes: Option<Vec<&String>> = matches.get_many("bootnodes").map(|v| v.collect());
     let enrtree_url: Option<&String> = matches.get_one("enrtree");
+    if bootnodes.is_none() && enrtree_url.is_none() {
+        error!("either --bootnodes or --enrtree is required");
+        return ExitCode::from(1);
+    }
     let dns_cache_path: &String = matches.get_one("dns-cache").expect("has default");
     let client_id: &String = matches.get_one("client-id").expect("has default");
-    let listen_port: &String = matches.get_one("listen").expect("required arg");
+    let listen_port: &String = match matches.get_one("listen") {
+        Some(port) => port,
+        None => {
+            error!("--listen is required");
+            return ExitCode::from(1);
+        }
+    };
     let max_tunneled_peers: usize = matches
         .get_one::<String>("max-tunneled-peers")
         .expect("has default")
@@ -300,6 +330,58 @@ fn main() -> ExitCode {
     });
 
     ExitCode::from(0)
+}
+
+fn generate_token_command(matches: &ArgMatches) -> ExitCode {
+    let secret_path: &String = matches.get_one("jwt-secret-file").expect("required arg");
+    let expires_in: &String = matches.get_one("expires-in").expect("has default");
+
+    // Parse expiration duration
+    let expires_secs = match parse_duration(expires_in) {
+        Some(secs) => secs,
+        None => {
+            eprintln!("Invalid duration format: {}", expires_in);
+            eprintln!("Use format like: 1h, 24h, 7d, 30d");
+            return ExitCode::from(1);
+        }
+    };
+
+    // Load secret
+    let secret = match api::auth::load_secret_from_file(secret_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to load JWT secret: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+
+    // Generate token
+    match api::auth::create_token(&secret, Some(expires_secs)) {
+        Ok(token) => {
+            println!("{}", token);
+            ExitCode::from(0)
+        }
+        Err(e) => {
+            eprintln!("Failed to generate token: {}", e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: u64 = num_str.parse().ok()?;
+
+    match unit {
+        "h" => Some(num * 3600),
+        "d" => Some(num * 86400),
+        _ => None,
+    }
 }
 
 fn load_private_key(path: &str) -> Result<SigningKey, String> {
