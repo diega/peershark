@@ -1,0 +1,17 @@
+# Rust
+/target
+
+# IDE - RustRover/JetBrains
+.idea/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Private keys
+*.key
+*_key.txt
+
+# Runtime data
+dns_cache.json
+static-nodes.json
