@@ -7,13 +7,18 @@ description = "Transparent P2P traffic analyzer for Ethereum networks"
 
 [dependencies]
 aes = "0.8"
+base64 = "0.22"
 ctr = "0.9"
+data-encoding = "2"
 hex = "0.4"
+hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 hmac = "0.12"
 k256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 rand = "0.8"
 sha2 = "0.10"
 sha3 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 snap = "1"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
