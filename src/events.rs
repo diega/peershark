@@ -98,7 +98,7 @@ pub enum ProxyEvent {
         protocol: Protocol,
         size: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
-        raw: Option<String>,
+        raw: Option<String>, // Hex encoded, only if requested
         timestamp: i64,
     },
 
