@@ -23,7 +23,6 @@ impl EventBus {
 
     /// Subscribes to events from this bus.
     /// Returns a receiver that will get all events emitted after subscription.
-    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<ProxyEvent> {
         self.sender.subscribe()
     }
@@ -99,6 +98,7 @@ mod tests {
             msg_name: "Status".to_string(),
             protocol: Protocol::Eth,
             size: 100,
+            decoded: None,
             raw: None,
             timestamp: 999,
         };

@@ -8,6 +8,8 @@ use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use serde_json::Value;
+
 use crate::connection;
 use crate::constants::{
     ENODE_DISPLAY_LEN, MAX_PEER_RETRIES, STATUS_EXCHANGE_TIMEOUT, TUNNEL_IDLE_TIMEOUT,
@@ -15,12 +17,14 @@ use crate::constants::{
 use crate::discv4::{DiscV4, DiscV4Event, Endpoint};
 use crate::error::Error;
 use crate::eth;
+use crate::eth_messages;
 use crate::event_bus::EventBus;
 use crate::events::{self, Direction, Protocol, ProxyEvent, now_millis};
 use crate::handshake;
 use crate::p2p;
 use crate::peer_pool::{FailureKind, PeerPool};
 use crate::session::Session;
+use crate::snap_messages;
 use crate::tunneled_peers::{TunneledPeer, TunneledPeerRegistry};
 
 /// Unwrap timeout result, converting timeout to Error::Timeout.
@@ -302,8 +306,8 @@ pub async fn handle_client(
         .map(|c| format!("{}/{}", c.name, c.version))
         .collect();
 
-    // Validate client supports eth protocol
-    let _eth_version = hello
+    // Extract negotiated eth version for message decoding
+    let eth_version = hello
         .capabilities
         .iter()
         .filter(|c| c.name == "eth")
@@ -441,6 +445,7 @@ pub async fn handle_client(
             shutdown_rx,
             &event_bus,
             &tunnel_id,
+            eth_version,
         )
         .await;
         let tunnel_duration = relay_start.elapsed();
@@ -568,12 +573,14 @@ async fn relay_messages(
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: &EventBus,
     tunnel_id: &str,
+    eth_version: u8,
 ) -> Result<(), Error> {
     loop {
         tokio::select! {
             result = tokio::time::timeout(TUNNEL_IDLE_TIMEOUT, client.read_message()) => {
                 let (msg_id, payload) = unwrap_timeout_result(result, "tunnel idle timeout (no client activity)")?;
                 let protocol = classify_protocol(msg_id);
+                let decoded = decode_message(msg_id, protocol, &payload, eth_version);
 
                 event_bus.emit(ProxyEvent::MessageRelayed {
                     tunnel_id: tunnel_id.to_string(),
@@ -582,6 +589,7 @@ async fn relay_messages(
                     msg_name: events::msg_name(msg_id, protocol),
                     protocol,
                     size: payload.len(),
+                    decoded,
                     raw: None,
                     timestamp: now_millis(),
                 });
@@ -591,6 +599,7 @@ async fn relay_messages(
             result = tokio::time::timeout(TUNNEL_IDLE_TIMEOUT, peer.read_message()) => {
                 let (msg_id, payload) = unwrap_timeout_result(result, "tunnel idle timeout (no peer activity)")?;
                 let protocol = classify_protocol(msg_id);
+                let decoded = decode_message(msg_id, protocol, &payload, eth_version);
 
                 event_bus.emit(ProxyEvent::MessageRelayed {
                     tunnel_id: tunnel_id.to_string(),
@@ -599,6 +608,7 @@ async fn relay_messages(
                     msg_name: events::msg_name(msg_id, protocol),
                     protocol,
                     size: payload.len(),
+                    decoded,
                     raw: None,
                     timestamp: now_millis(),
                 });
@@ -620,12 +630,36 @@ async fn relay_messages(
     }
 }
 
+/// SNAP capability offset (after P2P base 0x10 + ETH range 0x11).
+const SNAP_OFFSET: u8 = 0x21;
+
 /// Classify message protocol based on msg_id.
 fn classify_protocol(msg_id: u8) -> Protocol {
     match msg_id {
         0x00..=0x0F => Protocol::P2p,
-        0x10..=0x1F => Protocol::Eth,
+        0x10..=0x20 => Protocol::Eth,
+        SNAP_OFFSET..=0x28 => Protocol::Snap,
         _ => Protocol::Unknown,
+    }
+}
+
+/// Decode a message payload based on protocol, msg_id, and eth version.
+fn decode_message(
+    msg_id: u8,
+    protocol: Protocol,
+    payload: &[u8],
+    eth_version: u8,
+) -> Option<Value> {
+    match protocol {
+        Protocol::Eth => {
+            let decoder = eth_messages::get_decoder(eth_version);
+            serde_json::to_value(decoder(msg_id, payload)).ok()
+        }
+        Protocol::Snap => {
+            let relative_id = msg_id.saturating_sub(SNAP_OFFSET);
+            serde_json::to_value(snap_messages::decode(relative_id, payload)).ok()
+        }
+        _ => None,
     }
 }
 

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod api;
 mod bytes;
 mod connection;
 mod constants;
@@ -34,7 +35,7 @@ use time::UtcOffset;
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::time::OffsetTime;
 
 use constants::{PRIVATE_KEY_LEN, SHUTDOWN_GRACE_PERIOD};
@@ -44,6 +45,14 @@ use error::Error;
 use event_bus::EventBus;
 use proxy_discovery::{DiscoverySource, run_discovery_peer, validate_enode_url};
 use tunneled_peers::TunneledPeerRegistry;
+
+/// Configuration for the HTTP/WebSocket API server.
+pub struct ApiConfig {
+    pub port: u16,
+    pub bind_address: Option<String>,
+    pub cors_origin: Option<String>,
+    pub jwt_secret: Option<Vec<u8>>,
+}
 
 fn main() -> ExitCode {
     // Get local offset at startup (before spawning threads).
@@ -118,6 +127,33 @@ fn main() -> ExitCode {
                 .default_value("10")
                 .help("Maximum number of tunneled peers to create"),
         )
+        .arg(
+            Arg::new("api-port")
+                .long("api-port")
+                .help("Port for API HTTP/WebSocket server"),
+        )
+        .arg(
+            Arg::new("api-host")
+                .long("api-host")
+                .default_value("127.0.0.1")
+                .help("Address for API server to bind to (default: 127.0.0.1)"),
+        )
+        .arg(
+            Arg::new("api-cors-origin")
+                .long("api-cors-origin")
+                .help("CORS origin for API (use '*' for any)"),
+        )
+        .arg(
+            Arg::new("jwt-secret-file")
+                .long("jwt-secret-file")
+                .help("Path to JWT secret file (32 bytes hex). Auto-generates if not specified"),
+        )
+        .arg(
+            Arg::new("no-auth")
+                .long("no-auth")
+                .action(clap::ArgAction::SetTrue)
+                .help("Disable API authentication (for development only)"),
+        )
         .get_matches();
 
     let key_path: &String = matches.get_one("private-key").expect("required arg");
@@ -131,6 +167,21 @@ fn main() -> ExitCode {
         .expect("has default")
         .parse()
         .unwrap_or(10);
+
+    let api_port: Option<u16> = matches
+        .get_one::<String>("api-port")
+        .and_then(|s| s.parse().ok());
+    let api_host: Option<String> = matches.get_one::<String>("api-host").cloned();
+    let api_cors_origin: Option<String> = matches.get_one::<String>("api-cors-origin").cloned();
+    let jwt_secret_file: Option<&String> = matches.get_one("jwt-secret-file");
+    let no_auth = matches.get_flag("no-auth");
+
+    // Require explicit environment variable to disable authentication
+    if no_auth && std::env::var("PEERSHARK_ALLOW_NO_AUTH").is_err() {
+        error!("--no-auth requires PEERSHARK_ALLOW_NO_AUTH=1 environment variable");
+        error!("This flag disables ALL API authentication and should only be used for development");
+        return ExitCode::from(1);
+    }
 
     let master_key = match load_private_key(key_path) {
         Ok(key) => key,
@@ -188,6 +239,51 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     };
 
+    // Load or generate JWT secret if API is enabled (unless --no-auth)
+    let jwt_secret = if api_port.is_some() && !no_auth {
+        let default_path = "peershark-jwt-secret.hex";
+        let secret_path = jwt_secret_file.map(|s| s.as_str()).unwrap_or(default_path);
+
+        if std::path::Path::new(secret_path).exists() {
+            match api::auth::load_secret_from_file(secret_path) {
+                Ok(s) => {
+                    info!(path = %secret_path, "loaded JWT secret");
+                    Some(s)
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to load JWT secret");
+                    return ExitCode::from(1);
+                }
+            }
+        } else if jwt_secret_file.is_some() {
+            error!(path = %secret_path, "JWT secret file not found");
+            return ExitCode::from(1);
+        } else {
+            match api::auth::generate_secret_file(secret_path) {
+                Ok(s) => {
+                    info!(path = %secret_path, "generated new JWT secret");
+                    Some(s)
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to generate JWT secret");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+    } else if no_auth && api_port.is_some() {
+        warn!("API authentication disabled (--no-auth)");
+        None
+    } else {
+        None
+    };
+
+    let api_config = api_port.map(|p| ApiConfig {
+        port: p,
+        bind_address: api_host,
+        cors_origin: api_cors_origin,
+        jwt_secret,
+    });
+
     runtime.block_on(async {
         if let Err(e) = run_proxy(
             port,
@@ -195,6 +291,7 @@ fn main() -> ExitCode {
             client_id,
             discovery_source,
             max_tunneled_peers,
+            api_config,
         )
         .await
         {
@@ -253,9 +350,37 @@ async fn run_proxy(
     client_id: &str,
     discovery_source: DiscoverySource,
     max_tunneled_peers: usize,
+    api: Option<ApiConfig>,
 ) -> Result<(), Error> {
     let event_bus = Arc::new(EventBus::new());
     debug!("event bus created");
+
+    // Start API server if configured
+    if let Some(api) = api {
+        let api_state = match api.jwt_secret {
+            Some(secret) => api::ApiState::new(secret),
+            None => api::ApiState::new_no_auth(),
+        };
+        // Subscribe to event bus BEFORE spawning to avoid race condition
+        // where events are emitted before the state updater is ready
+        let event_rx = event_bus.subscribe();
+        let event_bus_for_api = event_bus.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = api::run_server(
+                api.port,
+                api.bind_address,
+                api.cors_origin,
+                api_state,
+                event_bus_for_api,
+                event_rx,
+            )
+            .await
+            {
+                error!(error = %e, "API server error");
+            }
+        });
+    }
 
     let registry = Arc::new(RwLock::new(TunneledPeerRegistry::new(
         master_key.clone(),
