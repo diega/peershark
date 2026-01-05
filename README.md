@@ -4,51 +4,59 @@ Transparent P2P traffic analyzer for Ethereum networks.
 
 ## Current State
 
-Core cryptographic layer implementing ECIES encryption and RLPx handshake for establishing secure Ethereum P2P connections.
+Functional P2P protocol implementation with encrypted sessions and eth subprotocol support.
 
 ## Features
 
 - RLP encoding and decoding as per Ethereum Yellow Paper
-- ECIES encryption using secp256k1 curve
-- RLPx frame encryption with AES-256-CTR and MAC authentication
-- Bidirectional handshake (Auth/Ack) for session establishment
-- Enode URL parsing
+- ECIES encryption and RLPx framing
+- P2P protocol messages: Hello, Disconnect, Ping, Pong
+- eth subprotocol with Status message exchange
+- Snappy compression for subprotocol messages
+- Cancellation-safe async reads
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
-│              RLPx Session               │
+│            Application Layer            │
+│  eth (Status, Blocks, Transactions)     │
 ├─────────────────────────────────────────┤
-│  Auth ────────────────────────► Ack     │
-│  (ECIES encrypted, ephemeral keys)      │
+│             P2P Base Layer              │
+│    Hello, Disconnect, Ping, Pong        │
 ├─────────────────────────────────────────┤
-│         Frame Encryption Layer          │
-│    AES-256-CTR + Keccak256 MACs         │
+│          Encrypted Session              │
+│   (ECIES handshake + AES-CTR frames)    │
 ├─────────────────────────────────────────┤
 │              RLP Encoding               │
+├─────────────────────────────────────────┤
+│                  TCP                    │
 └─────────────────────────────────────────┘
 ```
 
 ## Design Decisions
 
-- **Stateful ciphers**: FrameCoder maintains AES counter and MAC state across frames, avoiding re-initialization overhead
-- **Ephemeral keys per message**: ECIES generates new key for each Auth/Ack, never reuses
-- **Zero IV with stateful counter**: AES-CTR reuses stream position, safe because keys are unique per session
-- **Separate key derivation**: ECIES shared secret split into AES key (16 bytes) + MAC key (16 bytes)
+- **Cancellation-safe reads**: Session uses a state machine (Header -> Body) that resumes correctly if a tokio::select! cancels mid-read. Critical for proxy relay loops.
+- **Two-phase handshake**: Crypto phase (Auth/Ack) establishes encryption, then logical phase (Hello) negotiates capabilities
+- **Message framing**: 1-byte message ID + RLP payload, wrapped in encrypted frame
+- **Snappy compression**: Applied to subprotocol messages (eth, snap) but not P2P base messages
 
 ## Project Structure
 
 ```
 src/
 ├── main.rs        Entry point
-├── ecies.rs       ECIES encryption
+├── connection.rs  Handshake as initiator/responder
+├── session.rs     Encrypted session (cancellation-safe)
+├── p2p.rs         P2P protocol messages
+├── eth.rs         eth subprotocol (Status)
 ├── frame.rs       RLPx frame encryption
 ├── handshake.rs   Auth/Ack structures
+├── ecies.rs       ECIES encryption
 ├── crypto.rs      Cryptographic helpers
-├── constants.rs   Protocol constants
 ├── rlp.rs         RLP encode/decode
 ├── bytes.rs       Integer encoding
+├── constants.rs   Protocol constants
 └── error.rs       Error types
 ```
 
@@ -57,6 +65,9 @@ src/
 - Private key files require mode `0600` (validated on startup)
 - ECIES uses AES-128-CTR per devp2p spec
 - Fresh ephemeral keypair generated for each encryption
+- `HANDSHAKE_TIMEOUT` (10s) prevents Slowloris attacks
+- `MAX_FRAME_SIZE` (4MB) prevents memory exhaustion
+- Cancellation-safe reads prevent state corruption in relay loop
 
 ## License
 
