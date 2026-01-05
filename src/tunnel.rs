@@ -288,6 +288,14 @@ pub async fn handle_client(
         flag: has_active_connection,
     };
 
+    // Generate tunnel ID from tunneled peer's node_id (unique per tunnel)
+    let tunnel_id = tunneled_peer.tunnel_id();
+    let local_port = client_session
+        .stream
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(0);
+
     let capabilities: Vec<String> = hello
         .capabilities
         .iter()
@@ -303,7 +311,13 @@ pub async fn handle_client(
         .max()
         .ok_or_else(|| Error::Protocol("no eth capability in client Hello".to_string()))?;
 
-    info!(client_id = %hello.client_id, capabilities = %capabilities.join(", "), "client connected");
+    info!(
+        tunnel_id = %tunnel_id,
+        port = local_port,
+        client_id = %hello.client_id,
+        capabilities = %capabilities.join(", "),
+        "client connected"
+    );
 
     // Send our Hello with all supported capabilities
     send_hello(
@@ -316,16 +330,17 @@ pub async fn handle_client(
 
     let client_status = eth::receive_status(&mut client_session).await?;
 
-    debug!(
+    info!(
+        tunnel_id = %tunnel_id,
         network_id = client_status.network_id,
         genesis = %hex::encode(&client_status.genesis_hash[..4]),
-        "client status"
+        "received client status"
     );
 
     // Try to connect to a real peer from the pool (with retry)
     // Pool tracks: in_use (no duplicates) and bad (skip failed peers)
     let mut last_error = String::from("no peers available");
-    let mut attempts = 0;
+    let mut attempts: u32 = 0;
 
     // Random start index to distribute load
     let start_idx = std::time::SystemTime::now()
@@ -350,7 +365,7 @@ pub async fn handle_client(
 
         let peer_display = truncate_enode(&peer_url);
 
-        let (mut peer_session, peer_status) = match connect_to_peer(
+        let (mut peer_session, peer_status, peer_client_id) = match connect_to_peer(
             &peer_url,
             tunneled_peer.signing_key(),
             client_id,
@@ -360,10 +375,25 @@ pub async fn handle_client(
         )
         .await
         {
-            Ok(result) => result,
+            Ok((session, status, client_id)) => (session, status, client_id),
             Err(e) => {
                 // Connection failed, record failure with appropriate penalty
                 let failure_kind = classify_failure(&e);
+                warn!(
+                    tunnel_id = %tunnel_id,
+                    attempt = attempts,
+                    peer = %peer_display,
+                    error = %e,
+                    "peer connection failed"
+                );
+                event_bus.emit(ProxyEvent::ConnectionAttemptFailed {
+                    tunnel_id: tunnel_id.clone(),
+                    peer_enode: peer_url.clone(),
+                    reason: e.to_string(),
+                    failure_kind,
+                    attempt_number: attempts,
+                    timestamp: now_millis(),
+                });
                 peer_pool.record_failure(&peer_url, failure_kind);
                 last_error = format!("{}: {}", peer_display, e);
                 continue;
@@ -372,6 +402,14 @@ pub async fn handle_client(
 
         // Check genesis BEFORE sending status to client
         if client_status.genesis_hash != peer_status.genesis_hash {
+            event_bus.emit(ProxyEvent::ConnectionAttemptFailed {
+                tunnel_id: tunnel_id.clone(),
+                peer_enode: peer_url.clone(),
+                reason: "genesis mismatch".to_string(),
+                failure_kind: FailureKind::GenesisMismatch,
+                attempt_number: attempts,
+                timestamp: now_millis(),
+            });
             peer_pool.record_failure(&peer_url, FailureKind::GenesisMismatch);
             last_error = format!("genesis mismatch with {}", peer_display);
             continue;
@@ -379,9 +417,6 @@ pub async fn handle_client(
 
         // Genesis matches - send peer's status to client
         eth::send_status(&mut client_session, &peer_status).await?;
-
-        // Generate tunnel ID from peer pubkey (first 8 bytes hex)
-        let tunnel_id = hex::encode(&peer_session.remote_pubkey[..8]);
 
         info!(
             peer = %peer_display,
@@ -392,7 +427,7 @@ pub async fn handle_client(
 
         event_bus.emit(ProxyEvent::PeerConnected {
             tunnel_id: tunnel_id.clone(),
-            client_id: hello.client_id.clone(),
+            client_id: peer_client_id.clone(),
             remote_enode: peer_url.clone(),
             network_id: peer_status.network_id,
             timestamp: now_millis(),
@@ -442,6 +477,12 @@ pub async fn handle_client(
         return result;
     }
 
+    warn!(
+        tunnel_id = %tunnel_id,
+        attempts,
+        last_error = %last_error,
+        "tunnel failed, all peer connection attempts exhausted"
+    );
     Err(Error::Protocol(format!(
         "failed to connect after {} attempts: {}",
         attempts, last_error
@@ -449,6 +490,7 @@ pub async fn handle_client(
 }
 
 /// Connect to a real peer and perform handshake.
+/// Returns (session, peer_status, peer_client_id).
 async fn connect_to_peer(
     enode_url: &str,
     signing_key: &SigningKey,
@@ -456,7 +498,7 @@ async fn connect_to_peer(
     node_id: [u8; 64],
     client_status: &eth::EthStatus,
     client_capabilities: &[p2p::Capability],
-) -> Result<(Session, eth::EthStatus), Error> {
+) -> Result<(Session, eth::EthStatus, String), Error> {
     let remote_pubkey = handshake::parse_enode_pubkey(enode_url)?;
 
     let parsed: url::Url =
@@ -514,7 +556,7 @@ async fn connect_to_peer(
         }
     };
 
-    Ok((session, peer_status))
+    Ok((session, peer_status, hello.client_id))
 }
 
 /// Relay messages bidirectionally between client and peer.

@@ -254,6 +254,9 @@ async fn run_proxy(
     discovery_source: DiscoverySource,
     max_tunneled_peers: usize,
 ) -> Result<(), Error> {
+    let event_bus = Arc::new(EventBus::new());
+    debug!("event bus created");
+
     let registry = Arc::new(RwLock::new(TunneledPeerRegistry::new(
         master_key.clone(),
         max_tunneled_peers,
@@ -280,9 +283,6 @@ async fn run_proxy(
 
     info!(port = discovery_port, "discovery peer listening on UDP");
     info!("waiting for client FINDNODE to create tunneled peers");
-
-    // Create event bus
-    let event_bus = Arc::new(EventBus::new());
 
     // Create shutdown broadcast channel
     // Capacity of 1 is enough since we only send one shutdown signal

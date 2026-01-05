@@ -77,6 +77,10 @@ besu \
 │  └─ Returns tunneled peers       ├─ Peer 2 (derived key #2)       │
 │                                  └─ Peer N (derived key #N)       │
 ├────────────────────────────────────────────────────────────────────┤
+│  Event Bus (broadcast channel)                                     │
+│  ├─ PeerConnected / PeerDisconnected                              │
+│  └─ MessageRelayed (direction, protocol, size, timestamp)         │
+├────────────────────────────────────────────────────────────────────┤
 │  Peer Discovery                                                    │
 │  ├─ discv4 UDP (PING/PONG, FINDNODE/NEIGHBORS)                    │
 │  └─ DNS EIP-1459 (ENR tree traversal)                             │
@@ -123,11 +127,20 @@ derived_key = HKDF-SHA256(master_key, context=neighbor_pubkey)
 | Genesis mismatch | Permanent ban | Never |
 | Invalid identity | Permanent ban | Never |
 
+### Event Bus
+
+- **Tokio broadcast channel**: Multiple subscribers, async-native
+- **Drop-on-lag**: If a subscriber can't keep up, events are dropped (acceptable for observability)
+- **Structured events**: Each event includes timestamp (ms), direction, protocol classification
+- **Decoupled**: Tunnel code emits events without knowing who listens
+
 ## Project Structure
 
 ```
 src/
 ├── main.rs             CLI and orchestration
+├── event_bus.rs        Broadcast channel for events
+├── events.rs           Event types (PeerConnected, MessageRelayed, etc.)
 ├── tunnel.rs           Bidirectional message relay
 ├── tunneled_peers.rs   HKDF key derivation, peer registry
 ├── proxy_discovery.rs  Discovery peer (responds to FINDNODE)
