@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn unknown_msg_id_returns_unknown() {
-        let result = decode(0xFF, &[]);
+        let result = decode_eth66(0xFF, &[]);
         match result {
             EthMessage::Unknown { msg_id } => assert_eq!(msg_id, 0xFF),
             _ => panic!("expected Unknown"),
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn malformed_status_returns_unknown() {
-        let result = decode(STATUS, &[0x00]);
+        let result = decode_eth66(STATUS, &[0x00]);
         match result {
             EthMessage::Unknown { msg_id } => assert_eq!(msg_id, STATUS),
             _ => panic!("expected Unknown for malformed status"),
@@ -915,7 +915,7 @@ mod tests {
     fn empty_list_returns_empty_hashes() {
         // RLP for empty list: 0xC0
         let empty_list = vec![0xC0];
-        let result = decode(TRANSACTIONS, &empty_list);
+        let result = decode_eth66(TRANSACTIONS, &empty_list);
         match result {
             EthMessage::Transactions { hashes } => assert!(hashes.is_empty()),
             _ => panic!("expected Transactions"),

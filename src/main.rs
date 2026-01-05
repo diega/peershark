@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod api;
 mod bytes;
 mod client_registry;
 mod config;
@@ -34,10 +35,10 @@ use time::UtcOffset;
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::time::OffsetTime;
 
-use config::{Cli, RuntimeConfig, load_config_file, load_private_key};
+use config::{ApiRuntimeConfig, Cli, RuntimeConfig, load_config_file, load_private_key};
 use constants::SHUTDOWN_GRACE_PERIOD;
 use crypto::pubkey_to_node_id;
 use discv4::{DiscV4, Endpoint};
@@ -139,6 +140,13 @@ fn run_application(config: RuntimeConfig, master_key: k256::ecdsa::SigningKey) -
         return ExitCode::from(1);
     };
 
+    // Log API config status
+    if let Some(ref api) = config.api
+        && api.jwt_secret.is_none()
+    {
+        warn!("API authentication disabled (--no-auth)");
+    }
+
     runtime.block_on(async {
         if let Err(e) = run_proxy(
             config.listen_port,
@@ -147,6 +155,7 @@ fn run_application(config: RuntimeConfig, master_key: k256::ecdsa::SigningKey) -
             discovery_source,
             config.max_tunneled_peers,
             config.max_clients,
+            config.api,
         )
         .await
         {
@@ -171,9 +180,37 @@ async fn run_proxy(
     discovery_source: DiscoverySource,
     max_tunneled_peers: usize,
     max_clients: usize,
+    api: Option<ApiRuntimeConfig>,
 ) -> Result<(), Error> {
     let event_bus = Arc::new(EventBus::new());
     debug!("event bus created");
+
+    // Start API server if configured
+    if let Some(api) = api {
+        let api_state = match api.jwt_secret {
+            Some(secret) => api::ApiState::new(secret),
+            None => api::ApiState::new_no_auth(),
+        };
+        // Subscribe to event bus BEFORE spawning to avoid race condition
+        // where events are emitted before the state updater is ready
+        let event_rx = event_bus.subscribe();
+        let event_bus_for_api = event_bus.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = api::run_server(
+                api.port,
+                api.bind_address,
+                api.cors_origin,
+                api_state,
+                event_bus_for_api,
+                event_rx,
+            )
+            .await
+            {
+                error!(error = %e, "API server error");
+            }
+        });
+    }
 
     let registry = Arc::new(RwLock::new(TunneledPeerRegistry::new(
         master_key.clone(),

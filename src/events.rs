@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::peer_pool::FailureKind;
@@ -25,6 +26,7 @@ pub enum Direction {
 pub enum Protocol {
     P2p,
     Eth,
+    Snap,
     Unknown,
 }
 
@@ -53,6 +55,17 @@ pub fn msg_name(msg_id: u8, protocol: Protocol) -> String {
             0x1f => "GetReceipts".to_string(),
             0x20 => "Receipts".to_string(),
             _ => format!("eth:0x{:02x}", msg_id),
+        },
+        Protocol::Snap => match msg_id {
+            0x00 => "GetAccountRange".to_string(),
+            0x01 => "AccountRange".to_string(),
+            0x02 => "GetStorageRanges".to_string(),
+            0x03 => "StorageRanges".to_string(),
+            0x04 => "GetBytecodes".to_string(),
+            0x05 => "Bytecodes".to_string(),
+            0x06 => "GetTrieNodes".to_string(),
+            0x07 => "TrieNodes".to_string(),
+            _ => format!("snap:0x{:02x}", msg_id),
         },
         Protocol::Unknown => format!("0x{:02x}", msg_id),
     }
@@ -98,7 +111,9 @@ pub enum ProxyEvent {
         protocol: Protocol,
         size: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
-        raw: Option<String>, // Hex encoded, only if requested
+        decoded: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw: Option<String>,
         timestamp: i64,
     },
 
@@ -116,6 +131,16 @@ pub enum ProxyEvent {
         failure_kind: FailureKind,
         /// Attempt number (1-based).
         attempt_number: u32,
+        timestamp: i64,
+    },
+
+    /// Lightweight traffic tick for dashboard updates.
+    /// Always sent for every relayed message, regardless of subscription status.
+    TrafficTick {
+        tunnel_id: String,
+        direction: Direction,
+        size: usize,
+        msgs_per_sec: f64,
         timestamp: i64,
     },
 }
@@ -157,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn message_relayed_omits_null_raw() {
+    fn message_relayed_omits_null_fields() {
         let event = ProxyEvent::MessageRelayed {
             tunnel_id: "abc123".to_string(),
             client_node_id: "deadbeef00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -166,12 +191,14 @@ mod tests {
             msg_name: "GetBlockHeaders".to_string(),
             protocol: Protocol::Eth,
             size: 128,
+            decoded: None,
             raw: None,
             timestamp: 1704067200000,
         };
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.contains("\"raw\""));
+        assert!(!json.contains("\"decoded\""));
         assert!(json.contains("\"msg_name\":\"GetBlockHeaders\""));
     }
 
@@ -199,6 +226,25 @@ mod tests {
         assert_eq!(msg_name(0x00, Protocol::P2p), "Hello");
         assert_eq!(msg_name(0x10, Protocol::Eth), "Status");
         assert_eq!(msg_name(0x13, Protocol::Eth), "GetBlockHeaders");
+        assert_eq!(msg_name(0x00, Protocol::Snap), "GetAccountRange");
         assert_eq!(msg_name(0xFF, Protocol::Unknown), "0xff");
+    }
+
+    #[test]
+    fn traffic_tick_serializes_correctly() {
+        let event = ProxyEvent::TrafficTick {
+            tunnel_id: "abc123".to_string(),
+            direction: Direction::ClientToPeer,
+            size: 1024,
+            msgs_per_sec: 42.5,
+            timestamp: 1704067200000,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"traffic_tick\""));
+        assert!(json.contains("\"tunnel_id\":\"abc123\""));
+        assert!(json.contains("\"direction\":\"client_to_peer\""));
+        assert!(json.contains("\"size\":1024"));
+        assert!(json.contains("\"msgs_per_sec\":42.5"));
     }
 }

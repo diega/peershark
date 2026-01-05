@@ -7,15 +7,19 @@ license = "Apache-2.0"
 
 [dependencies]
 aes = "0.8"
+axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header", "cookie"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 ctr = "0.9"
 data-encoding = "2"
+futures = "0.3"
 governor = "0.6"
 hex = "0.4.3"
 hkdf = "0.12"
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 hmac = "0.12"
+jsonwebtoken = "9"
 k256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +30,7 @@ sha3 = "0.10"
 snap = "1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync", "signal"] }
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 url = "2.5.7"

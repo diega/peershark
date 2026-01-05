@@ -18,6 +18,9 @@ use crate::constants::{DEFAULT_MAX_CLIENTS, PRIVATE_KEY_LEN};
 pub struct Cli {
     #[command(flatten)]
     pub core: CoreArgs,
+
+    #[command(flatten)]
+    pub api: ApiArgs,
 }
 
 /// Core arguments for the proxy.
@@ -60,6 +63,30 @@ pub struct CoreArgs {
     pub max_clients: Option<usize>,
 }
 
+/// API server arguments.
+#[derive(Args, Debug, Default)]
+pub struct ApiArgs {
+    /// Port for API HTTP/WebSocket server.
+    #[arg(long = "api-port")]
+    pub api_port: Option<u16>,
+
+    /// Address for API server to bind to.
+    #[arg(long = "api-host")]
+    pub api_host: Option<String>,
+
+    /// CORS origin for API (use '*' for any).
+    #[arg(long = "api-cors-origin")]
+    pub api_cors_origin: Option<String>,
+
+    /// Path to JWT secret file (32 bytes hex).
+    #[arg(long = "jwt-secret-file")]
+    pub jwt_secret_file: Option<PathBuf>,
+
+    /// Disable API authentication (for development only).
+    #[arg(long = "no-auth")]
+    pub no_auth: bool,
+}
+
 // ============================================================================
 // CONFIG FILE STRUCTS
 // ============================================================================
@@ -77,6 +104,19 @@ pub struct ConfigFile {
     pub listen_port: Option<u16>,
     pub max_tunneled_peers: Option<usize>,
     pub max_clients: Option<usize>,
+    pub api: Option<ApiConfigFile>,
+}
+
+/// API configuration from TOML file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiConfigFile {
+    pub port: Option<u16>,
+    pub host: Option<String>,
+    pub cors_origin: Option<String>,
+    pub jwt_secret_file: Option<String>,
+    #[serde(default)]
+    pub no_auth: bool,
 }
 
 // ============================================================================
@@ -93,6 +133,15 @@ pub struct RuntimeConfig {
     pub listen_port: u16,
     pub max_tunneled_peers: usize,
     pub max_clients: usize,
+    pub api: Option<ApiRuntimeConfig>,
+}
+
+/// API runtime configuration.
+pub struct ApiRuntimeConfig {
+    pub port: u16,
+    pub bind_address: Option<String>,
+    pub cors_origin: Option<String>,
+    pub jwt_secret: Option<Vec<u8>>,
 }
 
 impl RuntimeConfig {
@@ -102,16 +151,16 @@ impl RuntimeConfig {
             .core
             .private_key
             .clone()
-            .or_else(|| file.private_key.map(PathBuf::from))
+            .or_else(|| file.private_key.clone().map(PathBuf::from))
             .ok_or(ConfigError::MissingRequired("private-key"))?;
 
         let bootnodes = if !cli.core.bootnodes.is_empty() {
             cli.core.bootnodes.clone()
         } else {
-            file.bootnodes
+            file.bootnodes.clone()
         };
 
-        let enrtree = cli.core.enrtree.clone().or(file.enrtree);
+        let enrtree = cli.core.enrtree.clone().or(file.enrtree.clone());
 
         if bootnodes.is_empty() && enrtree.is_none() {
             return Err(ConfigError::MissingNodeSource);
@@ -121,14 +170,14 @@ impl RuntimeConfig {
             .core
             .dns_cache
             .clone()
-            .or_else(|| file.dns_cache.map(PathBuf::from))
+            .or_else(|| file.dns_cache.clone().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("dns_cache.json"));
 
         let client_id = cli
             .core
             .client_id
             .clone()
-            .or(file.client_id)
+            .or(file.client_id.clone())
             .unwrap_or_else(|| "peershark/0.1.0".to_string());
 
         let listen_port = cli
@@ -149,6 +198,9 @@ impl RuntimeConfig {
             .or(file.max_clients)
             .unwrap_or(DEFAULT_MAX_CLIENTS);
 
+        // Merge API config
+        let api = Self::merge_api_config(cli, &file)?;
+
         Ok(RuntimeConfig {
             private_key_path,
             bootnodes,
@@ -158,7 +210,61 @@ impl RuntimeConfig {
             listen_port,
             max_tunneled_peers,
             max_clients,
+            api,
         })
+    }
+
+    fn merge_api_config(
+        cli: &Cli,
+        file: &ConfigFile,
+    ) -> Result<Option<ApiRuntimeConfig>, ConfigError> {
+        let api_file = file.api.as_ref();
+
+        let api_port: Option<u16> = cli.api.api_port.or_else(|| api_file.and_then(|a| a.port));
+
+        // If no API port configured, API is disabled
+        let Some(port) = api_port else {
+            return Ok(None);
+        };
+
+        let bind_address = cli
+            .api
+            .api_host
+            .clone()
+            .or_else(|| api_file.and_then(|a| a.host.clone()));
+
+        let cors_origin = cli
+            .api
+            .api_cors_origin
+            .clone()
+            .or_else(|| api_file.and_then(|a| a.cors_origin.clone()));
+
+        let jwt_secret_file: Option<PathBuf> = cli
+            .api
+            .jwt_secret_file
+            .clone()
+            .or_else(|| api_file.and_then(|a| a.jwt_secret_file.as_ref().map(PathBuf::from)));
+
+        let no_auth = cli.api.no_auth || api_file.map(|a| a.no_auth).unwrap_or(false);
+
+        // Require explicit environment variable to disable authentication
+        if no_auth && std::env::var("PEERSHARK_ALLOW_NO_AUTH").is_err() {
+            return Err(ConfigError::NoAuthRequiresEnvVar);
+        }
+
+        // Load or generate JWT secret (unless --no-auth)
+        let jwt_secret = if !no_auth {
+            Some(load_or_generate_jwt_secret(jwt_secret_file.as_ref())?)
+        } else {
+            None
+        };
+
+        Ok(Some(ApiRuntimeConfig {
+            port,
+            bind_address,
+            cors_origin,
+            jwt_secret,
+        }))
     }
 }
 
@@ -171,9 +277,11 @@ impl RuntimeConfig {
 pub enum ConfigError {
     MissingRequired(&'static str),
     MissingNodeSource,
+    NoAuthRequiresEnvVar,
     Io(std::io::Error),
     Toml(toml::de::Error),
     InvalidPrivateKey(String),
+    JwtSecret(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -185,9 +293,16 @@ impl std::fmt::Display for ConfigError {
             Self::MissingNodeSource => {
                 write!(f, "either --bootnodes or --enrtree is required")
             }
+            Self::NoAuthRequiresEnvVar => {
+                write!(
+                    f,
+                    "--no-auth requires PEERSHARK_ALLOW_NO_AUTH=1 environment variable. This flag disables ALL API authentication and should only be used for development"
+                )
+            }
             Self::Io(e) => write!(f, "{}", e),
             Self::Toml(e) => write!(f, "config parse error: {}", e),
             Self::InvalidPrivateKey(msg) => write!(f, "{}", msg),
+            Self::JwtSecret(msg) => write!(f, "JWT secret error: {}", msg),
         }
     }
 }
@@ -242,4 +357,28 @@ pub fn load_private_key(path: &PathBuf) -> Result<SigningKey, ConfigError> {
 
     SigningKey::from_bytes(&key_array.into())
         .map_err(|e| ConfigError::InvalidPrivateKey(format!("invalid key: {}", e)))
+}
+
+/// Load or generate JWT secret for API authentication.
+fn load_or_generate_jwt_secret(path: Option<&PathBuf>) -> Result<Vec<u8>, ConfigError> {
+    use crate::api;
+
+    let default_path = PathBuf::from("peershark-jwt-secret.hex");
+    let secret_path = path.unwrap_or(&default_path);
+    let secret_path_str = secret_path.to_string_lossy();
+
+    if secret_path.exists() {
+        api::auth::load_secret_from_file(&secret_path_str)
+            .map_err(|e| ConfigError::JwtSecret(e.to_string()))
+    } else if path.is_some() {
+        // User specified a path but file doesn't exist
+        Err(ConfigError::JwtSecret(format!(
+            "JWT secret file not found: {}",
+            secret_path.display()
+        )))
+    } else {
+        // Auto-generate at default path
+        api::auth::generate_secret_file(&secret_path_str)
+            .map_err(|e| ConfigError::JwtSecret(e.to_string()))
+    }
 }

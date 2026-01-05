@@ -13,6 +13,10 @@ CLAUDE.md
 *_key.txt
 key.txt
 
+# Secrets
+jwt_secret.txt
+*-jwt-secret.hex
+
 # Runtime data
 dns_cache.json
 static-nodes.json
