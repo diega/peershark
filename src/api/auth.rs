@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::error::Error;
 
 /// Default token expiration: 24 hours.
-#[allow(dead_code)]
 const DEFAULT_EXPIRATION_SECS: u64 = 24 * 60 * 60;
 
 /// JWT claims for API authentication.
@@ -24,7 +23,6 @@ pub struct Claims {
 }
 
 /// Create a JWT token with the given secret.
-#[allow(dead_code)]
 pub fn create_token(secret: &[u8], expires_in_secs: Option<u64>) -> Result<String, Error> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

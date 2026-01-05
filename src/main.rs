@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod api;
 mod bytes;
 mod client_registry;
@@ -38,7 +36,10 @@ use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::time::OffsetTime;
 
-use config::{ApiRuntimeConfig, Cli, RuntimeConfig, load_config_file, load_private_key};
+use config::{
+    ApiRuntimeConfig, Cli, Commands, GenerateTokenArgs, RuntimeConfig, load_config_file,
+    load_private_key, parse_duration,
+};
 use constants::SHUTDOWN_GRACE_PERIOD;
 use crypto::pubkey_to_node_id;
 use discv4::{DiscV4, Endpoint};
@@ -51,6 +52,11 @@ fn main() -> ExitCode {
     init_logging();
 
     let cli = Cli::parse();
+
+    // Handle generate-token subcommand
+    if let Some(Commands::GenerateToken(args)) = &cli.command {
+        return handle_generate_token(args);
+    }
 
     let config_file = match load_config_file(cli.core.config.as_ref()) {
         Ok(c) => c,
@@ -97,6 +103,37 @@ fn init_logging() {
                 .add_directive(tracing::Level::INFO.into()),
         )
         .init();
+}
+
+fn handle_generate_token(args: &GenerateTokenArgs) -> ExitCode {
+    let expires_secs = match parse_duration(&args.expires_in) {
+        Some(secs) => secs,
+        None => {
+            eprintln!("Invalid duration format: {}", args.expires_in);
+            eprintln!("Use format like: 1h, 24h, 7d, 30d");
+            return ExitCode::from(1);
+        }
+    };
+
+    let secret_path_str = args.jwt_secret_file.to_string_lossy();
+    let secret = match api::auth::load_secret_from_file(&secret_path_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to load JWT secret: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+
+    match api::auth::create_token(&secret, Some(expires_secs)) {
+        Ok(token) => {
+            println!("{}", token);
+            ExitCode::from(0)
+        }
+        Err(e) => {
+            eprintln!("Failed to generate token: {}", e);
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn run_application(config: RuntimeConfig, master_key: k256::ecdsa::SigningKey) -> ExitCode {

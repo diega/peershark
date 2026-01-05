@@ -105,6 +105,20 @@ cargo run --release -- \
   --jwt-secret-file jwt_secret.txt
 ```
 
+### Generating API Tokens
+
+```bash
+# Generate a token valid for 24 hours
+cargo run --release -- generate-token \
+  --jwt-secret-file jwt_secret.txt \
+  --expires-in 24h
+```
+
+Expiration formats: `1h`, `24h`, `7d`, `30d`
+
+- **Offline generation**: No running proxy required
+- **Stdout output**: Easy to pipe to files or scripts
+
 ### WebSocket Event Subscriptions
 
 Connect to `/ws/events` to receive real-time events. The connection flow:
@@ -392,6 +406,8 @@ cargo build --release
 - Max 50 concurrent WebSocket connections
 - Binds to `127.0.0.1` by default
 - CORS `*` requires `PEERSHARK_ALLOW_CORS_ANY=1` env var
+- Tokens require explicit expiration (`--expires-in`)
+- JWT secret files require mode `0600`
 
 ## License
 

@@ -142,11 +142,6 @@ pub struct ReceiptInfo {
     pub log_count: usize,
 }
 
-/// Decode ETH message (backward-compatible, defaults to eth/66).
-pub fn decode(msg_id: u8, payload: &[u8]) -> EthMessage {
-    decode_eth66(msg_id, payload)
-}
-
 /// Decoder for eth/65 and earlier (no request_id wrapper).
 pub fn decode_eth65(msg_id: u8, payload: &[u8]) -> EthMessage {
     let data = decompress_payload(payload);

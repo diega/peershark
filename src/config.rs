@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser};
+use clap::{Args, Parser, Subcommand};
 use k256::ecdsa::SigningKey;
 use serde::Deserialize;
 
@@ -21,6 +21,28 @@ pub struct Cli {
 
     #[command(flatten)]
     pub api: ApiArgs,
+
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+/// Available subcommands.
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Generate a JWT token for API authentication.
+    GenerateToken(GenerateTokenArgs),
+}
+
+/// Arguments for the generate-token subcommand.
+#[derive(Args, Debug)]
+pub struct GenerateTokenArgs {
+    /// Path to JWT secret file (32 bytes hex).
+    #[arg(long = "jwt-secret-file")]
+    pub jwt_secret_file: PathBuf,
+
+    /// Token expiration (e.g., 1h, 24h, 7d).
+    #[arg(long = "expires-in", default_value = "24h")]
+    pub expires_in: String,
 }
 
 /// Core arguments for the proxy.
@@ -380,5 +402,22 @@ fn load_or_generate_jwt_secret(path: Option<&PathBuf>) -> Result<Vec<u8>, Config
         // Auto-generate at default path
         api::auth::generate_secret_file(&secret_path_str)
             .map_err(|e| ConfigError::JwtSecret(e.to_string()))
+    }
+}
+
+/// Parse a duration string (e.g., "1h", "24h", "7d") into seconds.
+pub fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: u64 = num_str.parse().ok()?;
+
+    match unit {
+        "h" => Some(num * 3600),
+        "d" => Some(num * 86400),
+        _ => None,
     }
 }
