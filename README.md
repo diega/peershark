@@ -1,44 +1,124 @@
 # PeerShark
 
-Transparent P2P traffic analyzer for Ethereum networks.
+A transparent P2P traffic analyzer for Ethereum networks.
 
-## Current State
+## The Problem
 
-Full P2P stack with dual discovery mechanisms (discv4 UDP and DNS-based EIP-1459) and peer scoring.
+When you run an Ethereum node, you see logs about peers connecting and blocks syncing, but you don't really know:
+- Which peers are sending you blocks first?
+- How long do connections last before dropping?
+- What's the actual latency to each peer?
+- Are you getting duplicate messages from multiple peers?
 
-## Features
+PeerShark sits between your node and the network, decoding all devp2p traffic in real-time.
 
-- Complete RLPx protocol stack (encryption, framing, P2P, eth)
-- discv4 protocol: PING/PONG, FINDNODE/NEIGHBORS over UDP
-- EIP-1459 DNS node discovery with ENR tree traversal
-- Peer pool with scoring and failure categorization
-- Signature verification on DNS root records
+## How It Works
+
+PeerShark acts as a transparent proxy with multiple tunneled identities:
+
+```
+Your Node                    PeerShark                      Network
+    |                            |                             |
+    +---- connects to -----> [Tunneled Peer 1] ---------> Real Peer A
+    |                        [Tunneled Peer 2] ---------> Real Peer B
+    |                        [Tunneled Peer N] ---------> Real Peer N
+    |                            |
+    |                      [Discovery Peer]
+    |                       (responds to FINDNODE
+    |                        with tunneled peers)
+```
+
+Your node thinks it's talking to normal peers. Each "tunneled peer" is PeerShark proxying to a real peer on the network.
+
+## Usage
+
+```bash
+# Generate a private key
+openssl rand -hex 32 > key.txt
+
+# Run with DNS discovery
+cargo run --release -- \
+  -k key.txt \
+  -e 'enrtree://AKA3AM6LPBYEUDMVNU3BSVQJ5AD45Y7YPOHJLEF6W26QOE4VTUDPE@all.mainnet.ethdisco.net' \
+  -l 30306 \
+  --max-tunneled-peers 10
+```
+
+### Connecting Your Node
+
+Point your Ethereum node to PeerShark as its only bootnode:
+
+```bash
+# Besu
+besu \
+  --bootnodes="enode://<PEERSHARK_ID>@127.0.0.1:30306" \
+  --discovery-dns-url="" \
+  --discovery-enabled=true
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-C, --config` | Path to TOML configuration file |
+| `-k, --private-key` | Path to master key file (required) |
+| `-e, --enrtree` | DNS discovery URL (EIP-1459) |
+| `-b, --bootnodes` | Static enode URLs (comma-separated) |
+| `-l, --listen` | Discovery port (required) |
+| `--dns-cache` | Path to DNS discovery cache file |
+| `-c, --client-id` | Client ID string for Hello message |
+| `--max-tunneled-peers` | Tunneled peers to create (default: 10) |
+| `--max-clients` | Maximum unique clients allowed |
 
 ## Architecture
 
 ```
-                ┌─────────────────────────────┐
-                │       Peer Discovery        │
-                ├──────────────┬──────────────┤
-                │   discv4     │  DNS (1459)  │
-                │  UDP :30303  │   ENR tree   │
-                └──────┬───────┴───────┬──────┘
-                       │               │
-                       └───────┬───────┘
-                               ▼
-                     ┌─────────────────┐
-                     │    Peer Pool    │
-                     │ (scoring/retry) │
-                     └────────┬────────┘
-                              ▼
-                    RLPx Connection Stack
+┌────────────────────────────────────────────────────────────────────┐
+│                         PeerShark Proxy                            │
+├────────────────────────────────────────────────────────────────────┤
+│  Discovery Peer (UDP :30306)     Tunneled Peers (localhost)       │
+│  ├─ Responds to FINDNODE         ├─ Peer 1 (derived key #1)       │
+│  └─ Returns tunneled peers       ├─ Peer 2 (derived key #2)       │
+│                                  └─ Peer N (derived key #N)       │
+├────────────────────────────────────────────────────────────────────┤
+│  Peer Discovery                                                    │
+│  ├─ discv4 UDP (PING/PONG, FINDNODE/NEIGHBORS)                    │
+│  └─ DNS EIP-1459 (ENR tree traversal)                             │
+├────────────────────────────────────────────────────────────────────┤
+│  RLPx Protocol Stack                                               │
+│  ├─ eth subprotocol (Status, Blocks, Transactions)                │
+│  ├─ P2P base (Hello, Disconnect, Ping, Pong)                      │
+│  └─ Encrypted Session (ECIES + AES-256-CTR)                       │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Design Decisions
 
-### Peer Scoring System
+### HKDF Key Derivation
 
-The peer pool assigns scores to track reliability:
+Each tunneled peer gets a unique identity derived from the master key:
+
+```
+derived_key = HKDF-SHA256(master_key, context=neighbor_pubkey)
+```
+
+- **Deterministic**: Same master + neighbor -> same derived key (reproducible)
+- **Isolated**: Compromising one derived key doesn't expose master or siblings
+- **Auditable**: Context includes neighbor pubkey for traceability
+
+### Transparent Relay
+
+- Messages pass through **without modification**
+- Full protocol decoding for analysis, but no content alteration
+- Bidirectional relay with timeout detection
+
+### Peer Selection
+
+- Random selection from scored peer pool
+- Distributes load across available real peers
+- Automatic retry on connection failure
+
+### Peer Scoring System
 
 | Failure Type | Penalty | Recovery |
 |--------------|---------|----------|
@@ -47,41 +127,39 @@ The peer pool assigns scores to track reliability:
 | Genesis mismatch | Permanent ban | Never |
 | Invalid identity | Permanent ban | Never |
 
-- **Gradual recovery**: Score increases by 1 point per configured interval (default: 60s)
-- **Ban threshold**: Peers with score <= -10 are temporarily excluded
-- **Permanent bans**: Protocol-level incompatibilities (wrong chain) never recover
-
-### DNS Discovery
-
-- **Signature verification**: Root record must be signed by pubkey in enrtree:// URL
-- **Sequence comparison**: Skip re-crawling if `seq` unchanged from cache
-- **Randomization**: Shuffle discovered nodes before returning (load distribution)
-
-### discv4 Protocol
-
-- Packet format: hash (32) + signature (65) + type (1) + RLP payload
-- Hash covers signature+type+payload (not itself)
-
 ## Project Structure
 
 ```
 src/
-├── main.rs           Entry point
-├── discv4.rs         Discovery v4 UDP protocol
-├── dns_discovery.rs  EIP-1459 DNS discovery
-├── peer_pool.rs      Peer scoring and management
-├── connection.rs     Connection establishment
-├── session.rs        Encrypted session
-├── p2p.rs            P2P protocol messages
-├── eth.rs            eth subprotocol
-├── frame.rs          RLPx frame encryption
-├── handshake.rs      Auth/Ack structures
-├── ecies.rs          ECIES encryption
-├── crypto.rs         Cryptographic helpers
-├── rlp.rs            RLP encode/decode
-├── bytes.rs          Integer encoding
-├── constants.rs      Protocol constants
-└── error.rs          Error types
+├── main.rs             CLI and orchestration
+├── client_registry.rs  Client connection tracking
+├── config.rs           CLI parsing and TOML config
+├── eth_messages.rs     ETH protocol message decoding
+├── snap_messages.rs    SNAP protocol message decoding
+├── tunnel.rs           Bidirectional message relay
+├── tunneled_peers.rs   HKDF key derivation, peer registry
+├── proxy_discovery.rs  Discovery peer (responds to FINDNODE)
+├── discv4.rs           Discovery v4 UDP protocol
+├── dns_discovery.rs    EIP-1459 DNS discovery
+├── peer_pool.rs        Peer scoring and selection
+├── connection.rs       Connection establishment
+├── session.rs          Encrypted session (cancellation-safe)
+├── p2p.rs              P2P protocol messages
+├── eth.rs              eth subprotocol
+├── frame.rs            RLPx frame encryption
+├── handshake.rs        Auth/Ack structures
+├── ecies.rs            ECIES encryption
+├── crypto.rs           Cryptographic helpers
+├── rlp.rs              RLP encode/decode
+├── bytes.rs            Integer encoding
+├── constants.rs        Protocol constants
+└── error.rs            Error types
+```
+
+## Building
+
+```bash
+cargo build --release
 ```
 
 ## Security Notes
@@ -95,6 +173,9 @@ src/
 - Discovery messages expire after 60s (prevents replay attacks)
 - DNS root records verified against `enrtree://` public key
 - Genesis mismatch and invalid identity cause permanent bans
+- HKDF key isolation: derived keys don't expose master or siblings
+- `TUNNEL_IDLE_TIMEOUT` (60s) closes zombie connections
+- Deterministic derivation enables reproducible debugging
 
 ## License
 

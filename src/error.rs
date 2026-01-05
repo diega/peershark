@@ -43,6 +43,9 @@ pub enum Error {
 
     /// Frame size exceeds maximum allowed.
     FrameTooLarge(usize),
+
+    /// Operation timed out.
+    Timeout(String),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +64,7 @@ impl fmt::Display for Error {
             Error::ConnectionClosed => write!(f, "connection closed"),
             Error::Disconnected(reason) => write!(f, "disconnected: {}", reason),
             Error::FrameTooLarge(size) => write!(f, "frame too large: {} bytes", size),
+            Error::Timeout(msg) => write!(f, "timeout: {}", msg),
         }
     }
 }

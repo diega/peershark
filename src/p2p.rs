@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::bytes::decode_u16;
 use crate::error::Error;
 use crate::rlp;
@@ -182,7 +184,8 @@ pub fn decode_message(data: &[u8]) -> Result<(u8, &[u8]), Error> {
     Ok((msg_id, payload))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DisconnectReason {
     Requested,
     TcpError,
@@ -252,6 +255,11 @@ impl DisconnectReason {
 
         let code: u8 = code_bytes[0];
 
+        Self::from_code(code)
+    }
+
+    /// Create a DisconnectReason from a numeric code.
+    pub fn from_code(code: u8) -> DisconnectReason {
         match code {
             0 => DisconnectReason::Requested,
             1 => DisconnectReason::TcpError,

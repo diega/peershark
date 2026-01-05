@@ -5,11 +5,14 @@ use std::collections::HashSet;
 use std::sync::RwLock;
 use std::time::Instant;
 
+use serde::Serialize;
+
 use crate::constants::{PEER_SCORE_RECOVERY_SECS, PEER_SCORE_THRESHOLD};
 use crate::p2p::DisconnectReason;
 
 /// Category of connection failure for scoring purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FailureKind {
     /// TCP connection refused or failed.
     ConnectionRefused,
@@ -21,6 +24,9 @@ pub enum FailureKind {
     GenesisMismatch,
     /// Other protocol error.
     ProtocolError,
+    /// Peer disconnected immediately after successful Status exchange.
+    /// This typically indicates an unstable peer or protocol incompatibility.
+    ImmediateDisconnect,
 }
 
 impl FailureKind {
@@ -65,6 +71,10 @@ impl FailureKind {
             },
 
             FailureKind::ProtocolError => 5,
+
+            // Immediate disconnect after successful Status exchange
+            // Severe penalty - peer is unstable or incompatible
+            FailureKind::ImmediateDisconnect => 5,
         }
     }
 
@@ -138,7 +148,7 @@ impl PeerScore {
 /// - Lock contention is expected to be low
 pub struct PeerPool {
     /// All known peer URLs.
-    peers: Vec<String>,
+    peers: RwLock<Vec<String>>,
     /// Peers currently in use by active tunnels.
     in_use: RwLock<HashSet<String>>,
     /// Peer scores for prioritization and banning.
@@ -149,9 +159,19 @@ impl PeerPool {
     /// Create a new peer pool from a list of enode URLs.
     pub fn new(peers: Vec<String>) -> Self {
         PeerPool {
-            peers,
+            peers: RwLock::new(peers),
             in_use: RwLock::new(HashSet::new()),
             scores: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Add peers to the pool (used when discovery completes asynchronously).
+    pub fn add_peers(&self, new_peers: Vec<String>) {
+        let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
+        for peer in new_peers {
+            if !peers.contains(&peer) {
+                peers.push(peer);
+            }
         }
     }
 
@@ -161,12 +181,12 @@ impl PeerPool {
     /// The `start_idx` parameter helps distribute load among peers with similar scores.
     /// Returns the peer URL if successful, `None` if no peers are available.
     pub fn try_reserve(&self, start_idx: usize) -> Option<String> {
+        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
         let mut in_use = self.in_use.write().unwrap_or_else(|e| e.into_inner());
         let scores = self.scores.read().unwrap_or_else(|e| e.into_inner());
 
         // Collect available peers (not in use, not banned)
-        let mut available: Vec<&String> = self
-            .peers
+        let mut available: Vec<&String> = peers
             .iter()
             .filter(|peer| !in_use.contains(*peer))
             .filter(|peer| {
@@ -233,6 +253,7 @@ impl PeerPool {
     ///
     /// Returns a tuple of `(available, in_use, banned)` counts.
     pub fn stats(&self) -> (usize, usize, usize) {
+        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
         let in_use = self.in_use.read().unwrap_or_else(|e| e.into_inner());
         let scores = self.scores.read().unwrap_or_else(|e| e.into_inner());
 
@@ -240,14 +261,21 @@ impl PeerPool {
             .values()
             .filter(|s| s.effective_score() <= PEER_SCORE_THRESHOLD)
             .count();
-        let available = self.peers.len().saturating_sub(in_use.len() + banned);
+        let available = peers.len().saturating_sub(in_use.len() + banned);
 
         (available, in_use.len(), banned)
     }
 
     /// Total number of peers in the pool (regardless of status).
     pub fn total(&self) -> usize {
-        self.peers.len()
+        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
+        peers.len()
+    }
+
+    /// Get a copy of all peer URLs in the pool.
+    pub fn get_peers(&self) -> Vec<String> {
+        let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
+        peers.clone()
     }
 }
 
@@ -337,5 +365,50 @@ mod tests {
         // Score should be reset to 0
         let scores = pool.scores.read().unwrap();
         assert_eq!(scores.get(peer).unwrap().score, 0);
+    }
+
+    /// TDD: This test demonstrates the bug where peers that disconnect immediately
+    /// after Status exchange are not penalized, so they keep being selected.
+    /// The test should FAIL until FailureKind::ImmediateDisconnect is implemented.
+    #[test]
+    fn immediate_disconnect_has_severe_penalty() {
+        // This variant should exist to penalize peers that close connection
+        // immediately after successful Status exchange
+        let kind = FailureKind::ImmediateDisconnect;
+
+        // Should have high penalty (similar to ProtocolError or worse)
+        assert!(
+            kind.penalty() >= 5,
+            "immediate disconnect should have penalty >= 5"
+        );
+
+        // Should NOT be permanent (peer might recover)
+        assert!(
+            !kind.is_permanent(),
+            "immediate disconnect should not be permanent ban"
+        );
+    }
+
+    /// TDD: Verify that recording ImmediateDisconnect penalizes the peer
+    #[test]
+    fn immediate_disconnect_penalizes_peer() {
+        let pool = PeerPool::new(vec!["enode://a@1.1.1.1:30303".to_string()]);
+        let peer = "enode://a@1.1.1.1:30303";
+
+        // Reserve peer (simulating tunnel establishment)
+        let reserved = pool.try_reserve(0).unwrap();
+        assert_eq!(reserved, peer);
+
+        // Peer disconnects immediately - should be penalized
+        pool.record_failure(peer, FailureKind::ImmediateDisconnect);
+
+        // Verify peer was penalized
+        let scores = pool.scores.read().unwrap();
+        let score = scores.get(peer).unwrap();
+        assert!(
+            score.score < 0,
+            "peer should be penalized after immediate disconnect"
+        );
+        assert!(score.score <= -5, "penalty should be severe (at least -5)");
     }
 }
