@@ -1,0 +1,10 @@
+[package]
+name = "peershark"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Transparent P2P traffic analyzer for Ethereum networks"
+
+[dependencies]
+thiserror = "1.0"
+tokio = { version = "1", features = ["full"] }
