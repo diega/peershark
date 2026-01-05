@@ -295,8 +295,13 @@ pub async fn handle_client(
     // Format client node_id for events (full 64 bytes as hex)
     let client_node_id = ClientRegistry::format_node_id(&hello.node_id);
 
-    // Generate tunnel ID from tunneled peer node_id (first 8 bytes hex)
-    let tunnel_id = hex::encode(&tunneled_peer.node_id()[..8]);
+    // Generate tunnel ID from tunneled peer's node_id (unique per tunnel)
+    let tunnel_id = tunneled_peer.tunnel_id();
+    let local_port = client_session
+        .stream
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(0);
 
     let capabilities: Vec<String> = hello
         .capabilities
@@ -315,7 +320,13 @@ pub async fn handle_client(
         .max()
         .ok_or_else(|| Error::Protocol("no common eth capability".to_string()))?;
 
-    info!(client_id = %hello.client_id, capabilities = %capabilities.join(", "), "client connected");
+    info!(
+        tunnel_id = %tunnel_id,
+        port = local_port,
+        client_id = %hello.client_id,
+        capabilities = %capabilities.join(", "),
+        "client connected"
+    );
 
     // Send our Hello with all supported capabilities
     send_hello(
@@ -336,16 +347,17 @@ pub async fn handle_client(
 
     let client_status = eth::receive_status(&mut client_session).await?;
 
-    debug!(
+    info!(
+        tunnel_id = %tunnel_id,
         network_id = client_status.network_id,
         genesis = %hex::encode(&client_status.genesis_hash[..4]),
-        "client status"
+        "received client status"
     );
 
     // Try to connect to a real peer from the pool (with retry)
     // Pool tracks: in_use (no duplicates) and bad (skip failed peers)
     let mut last_error = String::from("no peers available");
-    let mut attempts = 0;
+    let mut attempts: u32 = 0;
 
     // Random start index to distribute load
     let start_idx = std::time::SystemTime::now()
@@ -391,10 +403,17 @@ pub async fn handle_client(
         )
         .await
         {
-            Ok(result) => result,
+            Ok((session, status, client_id)) => (session, status, client_id),
             Err(e) => {
                 // Connection failed, record failure with appropriate penalty
                 let failure_kind = classify_failure(&e);
+                warn!(
+                    tunnel_id = %tunnel_id,
+                    attempt = attempts,
+                    peer = %peer_display,
+                    error = %e,
+                    "peer connection failed"
+                );
                 event_bus.emit(ProxyEvent::PeerRejected {
                     tunnel_id: tunnel_id.clone(),
                     client_node_id: client_node_id.clone(),
@@ -503,6 +522,13 @@ pub async fn handle_client(
         }
         return result;
     }
+
+    warn!(
+        tunnel_id = %tunnel_id,
+        attempts,
+        last_error = %last_error,
+        "tunnel failed, all peer connection attempts exhausted"
+    );
 
     // Emit PeerDisconnected to clean up state when all attempts fail
     event_bus.emit(ProxyEvent::PeerDisconnected {
