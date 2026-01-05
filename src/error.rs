@@ -17,6 +17,24 @@ pub enum Error {
     /// RLPx handshake errors.
     Handshake(String),
 
+    /// Session-level errors (key derivation, message exchange).
+    Session(String),
+
+    /// P2P protocol errors (Hello, Disconnect).
+    Protocol(String),
+
+    /// Eth subprotocol errors (Status exchange).
+    Eth(String),
+
+    /// Network I/O errors.
+    Io(String),
+
+    /// Connection closed by remote peer.
+    ConnectionClosed,
+
+    /// Peer disconnected with a reason.
+    Disconnected(String),
+
     /// Frame size exceeds maximum allowed.
     FrameTooLarge(usize),
 }
@@ -28,9 +46,21 @@ impl fmt::Display for Error {
             Error::Ecies(msg) => write!(f, "ECIES error: {}", msg),
             Error::Frame(msg) => write!(f, "frame error: {}", msg),
             Error::Handshake(msg) => write!(f, "handshake error: {}", msg),
+            Error::Session(msg) => write!(f, "session error: {}", msg),
+            Error::Protocol(msg) => write!(f, "protocol error: {}", msg),
+            Error::Eth(msg) => write!(f, "eth error: {}", msg),
+            Error::Io(msg) => write!(f, "I/O error: {}", msg),
+            Error::ConnectionClosed => write!(f, "connection closed"),
+            Error::Disconnected(reason) => write!(f, "disconnected: {}", reason),
             Error::FrameTooLarge(size) => write!(f, "frame too large: {} bytes", size),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e.to_string())
+    }
+}
