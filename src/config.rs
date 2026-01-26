@@ -18,6 +18,9 @@ use crate::constants::{DEFAULT_MAX_CLIENTS, PRIVATE_KEY_LEN};
 pub struct Cli {
     #[command(flatten)]
     pub core: CoreArgs,
+
+    #[command(flatten)]
+    pub api: ApiArgs,
 }
 
 /// Core arguments for the proxy.
@@ -60,6 +63,22 @@ pub struct CoreArgs {
     pub max_clients: Option<usize>,
 }
 
+/// API server arguments.
+#[derive(Args, Debug, Default)]
+pub struct ApiArgs {
+    /// Port for API HTTP/WebSocket server.
+    #[arg(long = "api-port")]
+    pub api_port: Option<u16>,
+
+    /// Address for API server to bind to.
+    #[arg(long = "api-host")]
+    pub api_host: Option<String>,
+
+    /// CORS origin for API (use '*' for any).
+    #[arg(long = "api-cors-origin")]
+    pub api_cors_origin: Option<String>,
+}
+
 // ============================================================================
 // CONFIG FILE STRUCTS
 // ============================================================================
@@ -77,6 +96,16 @@ pub struct ConfigFile {
     pub listen_port: Option<u16>,
     pub max_tunneled_peers: Option<usize>,
     pub max_clients: Option<usize>,
+    pub api: Option<ApiConfigFile>,
+}
+
+/// API configuration from TOML file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiConfigFile {
+    pub port: Option<u16>,
+    pub host: Option<String>,
+    pub cors_origin: Option<String>,
 }
 
 // ============================================================================
@@ -93,6 +122,14 @@ pub struct RuntimeConfig {
     pub listen_port: u16,
     pub max_tunneled_peers: usize,
     pub max_clients: usize,
+    pub api: Option<ApiRuntimeConfig>,
+}
+
+/// API runtime configuration.
+pub struct ApiRuntimeConfig {
+    pub port: u16,
+    pub bind_address: Option<String>,
+    pub cors_origin: Option<String>,
 }
 
 impl RuntimeConfig {
@@ -102,16 +139,16 @@ impl RuntimeConfig {
             .core
             .private_key
             .clone()
-            .or_else(|| file.private_key.map(PathBuf::from))
+            .or_else(|| file.private_key.clone().map(PathBuf::from))
             .ok_or(ConfigError::MissingRequired("private-key"))?;
 
         let bootnodes = if !cli.core.bootnodes.is_empty() {
             cli.core.bootnodes.clone()
         } else {
-            file.bootnodes
+            file.bootnodes.clone()
         };
 
-        let enrtree = cli.core.enrtree.clone().or(file.enrtree);
+        let enrtree = cli.core.enrtree.clone().or(file.enrtree.clone());
 
         if bootnodes.is_empty() && enrtree.is_none() {
             return Err(ConfigError::MissingNodeSource);
@@ -121,14 +158,14 @@ impl RuntimeConfig {
             .core
             .dns_cache
             .clone()
-            .or_else(|| file.dns_cache.map(PathBuf::from))
+            .or_else(|| file.dns_cache.clone().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("dns_cache.json"));
 
         let client_id = cli
             .core
             .client_id
             .clone()
-            .or(file.client_id)
+            .or(file.client_id.clone())
             .unwrap_or_else(|| "peershark/0.1.0".to_string());
 
         let listen_port = cli
@@ -149,6 +186,9 @@ impl RuntimeConfig {
             .or(file.max_clients)
             .unwrap_or(DEFAULT_MAX_CLIENTS);
 
+        // Merge API config
+        let api = Self::merge_api_config(cli, &file)?;
+
         Ok(RuntimeConfig {
             private_key_path,
             bootnodes,
@@ -158,7 +198,40 @@ impl RuntimeConfig {
             listen_port,
             max_tunneled_peers,
             max_clients,
+            api,
         })
+    }
+
+    fn merge_api_config(
+        cli: &Cli,
+        file: &ConfigFile,
+    ) -> Result<Option<ApiRuntimeConfig>, ConfigError> {
+        let api_file = file.api.as_ref();
+
+        let api_port: Option<u16> = cli.api.api_port.or_else(|| api_file.and_then(|a| a.port));
+
+        // If no API port configured, API is disabled
+        let Some(port) = api_port else {
+            return Ok(None);
+        };
+
+        let bind_address = cli
+            .api
+            .api_host
+            .clone()
+            .or_else(|| api_file.and_then(|a| a.host.clone()));
+
+        let cors_origin = cli
+            .api
+            .api_cors_origin
+            .clone()
+            .or_else(|| api_file.and_then(|a| a.cors_origin.clone()));
+
+        Ok(Some(ApiRuntimeConfig {
+            port,
+            bind_address,
+            cors_origin,
+        }))
     }
 }
 

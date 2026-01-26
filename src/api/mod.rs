@@ -1,4 +1,3 @@
-pub mod auth;
 pub mod filter;
 pub mod server;
 pub mod state;
