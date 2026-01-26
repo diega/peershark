@@ -11,6 +11,9 @@ pub const ENODE_DISPLAY_LEN: usize = 50;
 /// Maximum number of peer connection attempts before giving up.
 pub const MAX_PEER_RETRIES: usize = 10;
 
+/// Default maximum number of unique clients that can connect.
+pub const DEFAULT_MAX_CLIENTS: usize = 10;
+
 /// Size of a node ID (uncompressed public key without prefix).
 pub const NODE_ID_LEN: usize = 64;
 

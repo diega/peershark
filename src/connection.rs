@@ -20,8 +20,9 @@ pub async fn connect_as_initiator(
     static_key: &SigningKey,
     remote_pubkey: &PublicKey,
 ) -> Result<Session, Error> {
-    let mut stream: TcpStream = TcpStream::connect(addr)
+    let mut stream: TcpStream = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(addr))
         .await
+        .map_err(|_| Error::Timeout(format!("connection to {} timed out", addr)))?
         .map_err(|e| Error::Handshake(format!("connection to {} failed: {}", addr, e)))?;
 
     let (auth_eip8, ephemeral_key, nonce) =
