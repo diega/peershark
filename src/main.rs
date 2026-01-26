@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod api;
 mod bytes;
 mod client_registry;
 mod config;
