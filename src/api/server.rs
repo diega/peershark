@@ -6,11 +6,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::headers::authorization::{Authorization, Bearer};
+use axum_extra::typed_header::TypedHeader;
 use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use time::Duration;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, info, warn};
@@ -19,6 +23,7 @@ use crate::error::Error;
 use crate::event_bus::EventBus;
 use crate::events::{Direction, ProxyEvent};
 
+use super::auth;
 use super::state::{ApiState, MAX_WS_CONNECTIONS};
 use super::websocket;
 
@@ -131,6 +136,8 @@ async fn health_handler(
 async fn auth_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
 ) -> Response {
     // Rate limit
     let client_ip = addr.ip().to_string();
@@ -138,18 +145,64 @@ async fn auth_handler(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
 
-    (StatusCode::BAD_REQUEST, "auth disabled").into_response()
+    // Require auth to be enabled
+    let secret = match &state.api.jwt_secret {
+        Some(s) => s,
+        None => return (StatusCode::BAD_REQUEST, "auth disabled").into_response(),
+    };
+
+    // Get token from Authorization header
+    let token = match auth_header {
+        Some(TypedHeader(Authorization(bearer))) => bearer.token().to_string(),
+        None => return (StatusCode::UNAUTHORIZED, "missing authorization header").into_response(),
+    };
+
+    // Validate token
+    if let Err(e) = auth::validate_token(&token, secret) {
+        warn!(error = %e, "invalid token in auth request");
+        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    }
+
+    // Create secure cookie
+    let cookie = Cookie::build(("peershark_session", token))
+        .path("/")
+        .http_only(true)
+        .secure(!cfg!(debug_assertions))
+        .same_site(SameSite::Strict)
+        .max_age(Duration::hours(24))
+        .build();
+
+    (jar.add(cookie), StatusCode::OK).into_response()
 }
 
 /// Get current state (auth required via cookie or header unless --no-auth).
 async fn state_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
 ) -> Response {
     // Check rate limit
     let client_ip = addr.ip().to_string();
     if state.rate_limiter.check_key(&client_ip).is_err() {
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+    }
+
+    // Skip auth if disabled
+    if let Some(secret) = &state.api.jwt_secret {
+        // Try cookie first, then Authorization header
+        let token = if let Some(cookie) = jar.get("peershark_session") {
+            cookie.value().to_string()
+        } else if let Some(TypedHeader(Authorization(bearer))) = auth_header {
+            bearer.token().to_string()
+        } else {
+            return (StatusCode::UNAUTHORIZED, "missing credentials").into_response();
+        };
+
+        if let Err(e) = auth::validate_token(&token, secret) {
+            warn!(error = %e, "invalid token");
+            return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+        }
     }
 
     let snapshot = state.api.snapshot().await;
@@ -161,6 +214,8 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    auth_header: Option<TypedHeader<Authorization<Bearer>>>,
 ) -> Response {
     // Check rate limit
     let client_ip = addr.ip().to_string();
@@ -176,6 +231,23 @@ async fn ws_handler(
             "too many WebSocket connections",
         )
             .into_response();
+    }
+
+    // Skip auth if disabled
+    if let Some(secret) = &state.api.jwt_secret {
+        // Try cookie first, then Authorization header
+        let token = if let Some(cookie) = jar.get("peershark_session") {
+            cookie.value().to_string()
+        } else if let Some(TypedHeader(Authorization(bearer))) = auth_header {
+            bearer.token().to_string()
+        } else {
+            return (StatusCode::UNAUTHORIZED, "missing credentials").into_response();
+        };
+
+        if let Err(e) = auth::validate_token(&token, secret) {
+            warn!(error = %e, "invalid WebSocket credentials");
+            return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+        }
     }
 
     // Increment connection count

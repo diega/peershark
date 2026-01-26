@@ -35,7 +35,7 @@ use time::UtcOffset;
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::time::OffsetTime;
 
 use config::{ApiRuntimeConfig, Cli, RuntimeConfig, load_config_file, load_private_key};
@@ -140,6 +140,13 @@ fn run_application(config: RuntimeConfig, master_key: k256::ecdsa::SigningKey) -
         return ExitCode::from(1);
     };
 
+    // Log API config status
+    if let Some(ref api) = config.api
+        && api.jwt_secret.is_none()
+    {
+        warn!("API authentication disabled (--no-auth)");
+    }
+
     runtime.block_on(async {
         if let Err(e) = run_proxy(
             config.listen_port,
@@ -180,7 +187,10 @@ async fn run_proxy(
 
     // Start API server if configured
     if let Some(api) = api {
-        let api_state = api::ApiState::new(Vec::new());
+        let api_state = match api.jwt_secret {
+            Some(secret) => api::ApiState::new(secret),
+            None => api::ApiState::new_no_auth(),
+        };
         // Subscribe to event bus BEFORE spawning to avoid race condition
         // where events are emitted before the state updater is ready
         let event_rx = event_bus.subscribe();

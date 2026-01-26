@@ -174,8 +174,19 @@ pub struct ApiState {
 }
 
 impl ApiState {
-    /// Create a new API state (authentication disabled).
-    pub fn new(_jwt_secret: Vec<u8>) -> Self {
+    /// Create a new API state with authentication.
+    pub fn new(jwt_secret: Vec<u8>) -> Self {
+        Self {
+            collecting_since: now_millis(),
+            clients: Arc::new(RwLock::new(HashMap::new())),
+            jwt_secret: Some(Arc::new(jwt_secret)),
+            ws_connections: Arc::new(AtomicUsize::new(0)),
+            global_rate: Arc::new(RateCounter::new(10)),
+        }
+    }
+
+    /// Create a new API state without authentication.
+    pub fn new_no_auth() -> Self {
         Self {
             collecting_since: now_millis(),
             clients: Arc::new(RwLock::new(HashMap::new())),

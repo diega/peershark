@@ -72,6 +72,8 @@ besu \
 | `--api-port` | HTTP API port |
 | `--api-host` | Address to bind API server (default: 127.0.0.1) |
 | `--api-cors-origin` | CORS origin (use * with caution) |
+| `--jwt-secret-file` | Path to JWT secret (32 bytes hex) |
+| `--no-auth` | Disable authentication (requires PEERSHARK_ALLOW_NO_AUTH=1) |
 
 ## API
 
@@ -87,16 +89,20 @@ PeerShark exposes an HTTP/WebSocket API for external observability.
 
 ### Authentication
 
-Authentication is not enabled yet in this revision. The API currently runs without auth.
+- **JWT Bearer token**: `Authorization: Bearer <token>`
+- **HttpOnly cookie**: Set automatically after first authenticated request
 
 ### Running with API
 
 ```bash
+openssl rand -hex 32 > jwt_secret.txt
+
 cargo run --release -- \
   -k key.txt \
   -e 'enrtree://...' \
   -l 30306 \
-  --api-port 8080
+  --api-port 8080 \
+  --jwt-secret-file jwt_secret.txt
 ```
 
 ### WebSocket Event Subscriptions
@@ -222,7 +228,7 @@ protocol in ["eth", "snap"]
 │  HTTP/WebSocket API (:8080)                                        │
 │  ├─ GET /api/tunnels, /api/stats                                  │
 │  ├─ WS /ws/events (real-time stream)                              │
-│  └─ No authentication (temporary)                                 │
+│  └─ JWT + Cookie authentication                                   │
 ├────────────────────────────────────────────────────────────────────┤
 │  Discovery Peer (UDP :30306)     Tunneled Peers (localhost)       │
 │  ├─ Responds to FINDNODE         ├─ Peer 1 (derived key #1)       │
@@ -328,6 +334,7 @@ src/
 ├── main.rs             CLI and orchestration
 ├── api/
 │   ├── mod.rs          API module exports
+│   ├── auth.rs         JWT validation and cookie handling
 │   ├── filter.rs       Filter expression parser and evaluator
 │   ├── server.rs       HTTP/WebSocket server (axum)
 │   ├── state.rs        Shared state with atomic counters
@@ -378,7 +385,8 @@ cargo build --release
 - HKDF key isolation: derived keys don't expose master or siblings
 - `TUNNEL_IDLE_TIMEOUT` (60s) closes zombie connections
 - Deterministic derivation enables reproducible debugging
-- API currently runs without authentication
+- JWT required for all endpoints (unless `--no-auth`)
+- `--no-auth` requires `PEERSHARK_ALLOW_NO_AUTH=1` env var
 - Cookies: `HttpOnly`, `Secure`, `SameSite=Strict`
 - Rate limit: 10 req/s per IP
 - Max 50 concurrent WebSocket connections
