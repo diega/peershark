@@ -23,7 +23,6 @@ impl EventBus {
 
     /// Subscribes to events from this bus.
     /// Returns a receiver that will get all events emitted after subscription.
-    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<ProxyEvent> {
         self.sender.subscribe()
     }
@@ -104,12 +103,13 @@ mod tests {
 
         let event = ProxyEvent::MessageRelayed {
             tunnel_id: "t1".to_string(),
-            client_node_id: "deadbeef00000000".to_string(),
+            client_node_id: "deadbeef00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
             direction: Direction::ClientToPeer,
             msg_id: 0x10,
             msg_name: "Status".to_string(),
             protocol: Protocol::Eth,
             size: 100,
+            decoded: None,
             raw: None,
             timestamp: 999,
         };

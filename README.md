@@ -83,7 +83,8 @@ besu \
 ├────────────────────────────────────────────────────────────────────┤
 │  Event Bus (broadcast channel)                                     │
 │  ├─ PeerConnected / PeerDisconnected                              │
-│  └─ MessageRelayed (direction, protocol, size, timestamp)         │
+│  ├─ MessageRelayed (direction, protocol, size, decoded, raw)      │
+│  └─ TrafficTick (derived from MessageRelayed, always sent to WS)  │
 ├────────────────────────────────────────────────────────────────────┤
 │  Peer Discovery                                                    │
 │  ├─ discv4 UDP (PING/PONG, FINDNODE/NEIGHBORS)                    │
