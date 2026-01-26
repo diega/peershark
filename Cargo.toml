@@ -2,25 +2,30 @@
 name = "peershark"
 version = "0.1.0"
 edition = "2024"
+description = "P2P traffic analyzer for Ethereum devp2p protocol"
 license = "Apache-2.0"
-description = "Transparent P2P traffic analyzer for Ethereum networks"
 
 [dependencies]
 aes = "0.8"
 base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
 ctr = "0.9"
 data-encoding = "2"
-hex = "0.4"
+governor = "0.6"
+hex = "0.4.3"
+hkdf = "0.12"
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 hmac = "0.12"
 k256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 rand = "0.8"
-sha2 = "0.10"
-sha3 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+sha3 = "0.10"
 snap = "1"
-thiserror = "1.0"
-tokio = { version = "1", features = ["full"] }
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync", "signal"] }
 tracing = "0.1"
-url = "2.5"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+url = "2.5.7"
